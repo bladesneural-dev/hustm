@@ -5,9 +5,9 @@ source /venv/main/bin/activate 2>/dev/null || true
 WORKSPACE=${WORKSPACE:-/workspace}
 COMFYUI_DIR="${WORKSPACE}/ComfyUI"
 
-echo "=== FLUX.2-klein-9B + Qwen3-8B + Z-Image Turbo + ComfyUI 0.21.0 ==="
+echo "=== FLUX.2-klein-9B + Qwen3-8B + Z-Image Turbo Setup ==="
 
-# === CUSTOM NODES (GitHub) ===
+# === CUSTOM NODES ===
 NODES=(
     "https://github.com/black-forest-labs/ComfyUI-Flux"
     "https://github.com/ltdrdata/ComfyUI-Manager"
@@ -32,25 +32,16 @@ DIFFUSION_DIR="${COMFYUI_DIR}/models/diffusion_models"
 TEXT_ENCODERS_DIR="${COMFYUI_DIR}/models/text_encoders"
 VAE_DIR="${COMFYUI_DIR}/models/vae"
 LLM_DIR="${COMFYUI_DIR}/models/LLM"
-CHECKPOINTS_DIR="${COMFYUI_DIR}/models/checkpoints"
-ZIMAGE_DIR="${COMFYUI_DIR}/models/Z-Image-Turbo"
+ZIMAGE_DIR="${COMFYUI_DIR}/models/z-image-turbo"
 
 # === MODEL URLS ===
-# FLUX.2
 FLUX_URL="https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/resolve/main/flux-2-klein-9b.safetensors"
-
-# Qwen Encoders
 QWEN_FP8_URL="https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors"
 QWEN_FULL_URL="https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b.safetensors"
-
-# VAE
 VAE_URL="https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors"
-
-# Qwen GGUF (optional)
 QWEN_GGUF_URL="https://huggingface.co/mradermacher/Qwen3-8B-heretic-GGUF/resolve/main/Qwen3-8B-heretic.Q8_0.gguf"
 
-# Z-Image Turbo (HuggingFace)
-ZIMAGE_MODEL_URL="https://huggingface.co/Tongyi-MAI/Z-Image-Turbo/resolve/main/z-image-turbo.safetensors"
+# Z-Image Turbo (Diffusers pipeline)
 ZIMAGE_REPO="Tongyi-MAI/Z-Image-Turbo"
 
 # === FUNCTIONS ===
@@ -110,54 +101,52 @@ download_with_auth() {
         return 0
     else
         echo " [!] FAILED: $(basename "$target_file")"
-        if [[ "$url" =~ huggingface\.co ]]; then
-            echo "     Reason: 403 Forbidden - Check HF_TOKEN permissions"
-            echo "     Action: Accept license at $(echo $url | cut -d'/resolve' -f1)"
-        fi
         return 1
     fi
 }
 
 download_zimage_turbo() {
     echo ""
-    echo "📦 Z-Image Turbo Setup..."
-    echo "========================"
+    echo "📦 Z-Image Turbo Setup (Diffusers Pipeline)..."
+    echo "=============================================="
+    echo "⚠️  Total size: ~32.6GB"
+    echo ""
     
     mkdir -p "${ZIMAGE_DIR}"
     
-    # Скачиваем основную модель
-    local model_file="${ZIMAGE_DIR}/z-image-turbo.safetensors"
-    if [[ -f "$model_file" ]]; then
-        echo "✅ Z-Image Turbo model exists"
-    else
-        echo "→ Downloading Z-Image Turbo model..."
-        local auth=""
-        if [[ -n "$HF_TOKEN" ]]; then
-            auth="--header=\"Authorization: Bearer $HF_TOKEN\""
-        fi
-        
-        if eval wget -nc --show-progress -e dotbytes=4M $auth -O "$model_file" \
-            "https://huggingface.co/${ZIMAGE_REPO}/resolve/main/z-image-turbo.safetensors" 2>/dev/null; then
-            echo "✅ Z-Image Turbo downloaded"
-        else
-            echo " [!] Z-Image Turbo download failed"
-            echo "     Try: Accept license at https://huggingface.co/${ZIMAGE_REPO}"
-        fi
+    # Проверяем есть ли уже скачанные файлы
+    if [[ -f "${ZIMAGE_DIR}/transformer/diffusion_pytorch_model-00001-of-00003.safetensors" ]]; then
+        echo "✅ Z-Image Turbo already downloaded"
+        return 0
     fi
     
-    # Клонируем ComfyUI ноды для Z-Image если есть
-    echo "→ Checking for Z-Image ComfyUI nodes..."
-    local nodes_dir="${COMFYUI_DIR}/custom_nodes"
+    echo "→ Downloading Z-Image Turbo via huggingface-cli..."
     
-    # Ищем официальные ноды Tongyi
-    if [[ ! -d "${nodes_dir}/ComfyUI-Z-Image" ]]; then
-        echo "→ Cloning ComfyUI-Z-Image nodes..."
-        cd "${nodes_dir}"
-        # Пробуем найти репозиторий с нодами
-        if ! git clone https://github.com/Tongyi-MAI/ComfyUI-Z-Image.git 2>/dev/null; then
-            echo " [!] ComfyUI-Z-Image nodes not found, trying alternative..."
-            # Альтернативный репозиторий если есть
-        fi
+    # Устанавливаем/обновляем huggingface-hub
+    pip install --no-cache-dir --upgrade huggingface-hub 2>/dev/null || true
+    
+    # Скачиваем весь pipeline
+    if [[ -n "$HF_TOKEN" ]]; then
+        huggingface-cli download "${ZIMAGE_REPO}" \
+            --local-dir "${ZIMAGE_DIR}" \
+            --token "$HF_TOKEN" \
+            --local-dir-use-symlinks False \
+            --resume-download 2>&1 | tail -n 20
+    else
+        huggingface-cli download "${ZIMAGE_REPO}" \
+            --local-dir "${ZIMAGE_DIR}" \
+            --local-dir-use-symlinks False \
+            --resume-download 2>&1 | tail -n 20
+    fi
+    
+    if [[ $? -eq 0 && -f "${ZIMAGE_DIR}/transformer/diffusion_pytorch_model-00001-of-00003.safetensors" ]]; then
+        echo "✅ Z-Image Turbo downloaded successfully"
+        echo "📁 Location: ${ZIMAGE_DIR}"
+        du -sh "${ZIMAGE_DIR}"
+    else
+        echo " [!] Z-Image Turbo download failed"
+        echo "     Try manual download:"
+        echo "     huggingface-cli download ${ZIMAGE_REPO} --local-dir ${ZIMAGE_DIR}"
     fi
 }
 
@@ -186,11 +175,11 @@ echo ""
 echo "📦 DOWNLOADING MODELS..."
 echo "========================"
 
-# 1. FLUX.2-klein-9B (GATED - требует токена с доступом)
+# 1. FLUX.2-klein-9B
 download_with_auth "${DIFFUSION_DIR}/flux-2-klein-9b.safetensors" "$FLUX_URL" || \
-    echo "⚠️ FLUX.2 download failed - check token permissions"
+    echo "⚠️ FLUX.2 download failed"
 
-# 2. Qwen3-8B Text Encoder (FP8 preferred)
+# 2. Qwen3-8B Text Encoder
 echo ""
 echo "📦 Qwen3-8B Text Encoder..."
 download_with_auth "${TEXT_ENCODERS_DIR}/qwen_3_8b_fp8mixed.safetensors" "$QWEN_FP8_URL" || \
@@ -211,7 +200,7 @@ if [[ -n "$HF_TOKEN" ]]; then
     download_with_auth "${LLM_DIR}/Qwen3-8B-heretic-GGUF/Qwen3-8B-heretic.Q8_0.gguf" "$QWEN_GGUF_URL" || true
 fi
 
-# 5. Z-Image Turbo
+# 5. Z-Image Turbo (Diffusers pipeline)
 download_zimage_turbo
 
 echo ""
@@ -219,7 +208,7 @@ echo "✅ PROVISIONING COMPLETE!"
 echo "========================="
 echo ""
 echo "📁 Model paths:"
-echo "   • Diffusion: ${DIFFUSION_DIR}/"
+echo "   • FLUX.2: ${DIFFUSION_DIR}/"
 ls -lh "${DIFFUSION_DIR}"/*.safetensors 2>/dev/null || echo "      [NO MODELS]"
 echo ""
 echo "   • Text Encoders: ${TEXT_ENCODERS_DIR}/"
@@ -229,7 +218,12 @@ echo "   • VAE: ${VAE_DIR}/"
 ls -lh "${VAE_DIR}"/*.safetensors 2>/dev/null || echo "      [NO MODELS]"
 echo ""
 echo "   • Z-Image Turbo: ${ZIMAGE_DIR}/"
-ls -lh "${ZIMAGE_DIR}"/*.safetensors 2>/dev/null || echo "      [NO MODELS]"
+if [[ -d "${ZIMAGE_DIR}/transformer" ]]; then
+    du -sh "${ZIMAGE_DIR}" 2>/dev/null || echo "      [CHECKING...]"
+    ls -lh "${ZIMAGE_DIR}/transformer/"*.safetensors 2>/dev/null | head -n 3
+else
+    echo "      [NOT DOWNLOADED]"
+fi
 echo ""
 echo "🚀 ComfyUI will start on port 18188"
 echo ""
