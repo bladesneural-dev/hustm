@@ -5,7 +5,7 @@ source /venv/main/bin/activate 2>/dev/null || true
 WORKSPACE=${WORKSPACE:-/workspace}
 COMFYUI_DIR="${WORKSPACE}/ComfyUI"
 
-echo "=== FLUX.2-klein-9B + Qwen3-8B + Z-Image Turbo Setup ==="
+echo "=== FLUX.2-klein-9B + Qwen3-8B + Z-Image Turbo (BF16) + HF Tools ==="
 
 # === CUSTOM NODES ===
 NODES=(
@@ -32,17 +32,22 @@ DIFFUSION_DIR="${COMFYUI_DIR}/models/diffusion_models"
 TEXT_ENCODERS_DIR="${COMFYUI_DIR}/models/text_encoders"
 VAE_DIR="${COMFYUI_DIR}/models/vae"
 LLM_DIR="${COMFYUI_DIR}/models/LLM"
-ZIMAGE_DIR="${COMFYUI_DIR}/models/z-image-turbo"
+LORAS_DIR="${COMFYUI_DIR}/models/loras"
+HF_CACHE_DIR="${WORKSPACE}/.cache/huggingface"
 
 # === MODEL URLS ===
+# FLUX.2
 FLUX_URL="https://huggingface.co/black-forest-labs/FLUX.2-klein-9B/resolve/main/flux-2-klein-9b.safetensors"
 QWEN_FP8_URL="https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors"
 QWEN_FULL_URL="https://huggingface.co/Comfy-Org/flux2-klein-9B/resolve/main/split_files/text_encoders/qwen_3_8b.safetensors"
 VAE_URL="https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files/vae/flux2-vae.safetensors"
 QWEN_GGUF_URL="https://huggingface.co/mradermacher/Qwen3-8B-heretic-GGUF/resolve/main/Qwen3-8B-heretic.Q8_0.gguf"
 
-# Z-Image Turbo (Diffusers pipeline)
-ZIMAGE_REPO="Tongyi-MAI/Z-Image-Turbo"
+# Z-IMAGE TURBO (BF16)
+ZIMAGE_MODEL_URL="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors"
+ZIMAGE_ENCODER_URL="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors"
+ZIMAGE_VAE_URL="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors"
+ZIMAGE_LORA_URL="https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/loras/z_image_turbo_distill_patch_lora_bf16.safetensors"
 
 # === FUNCTIONS ===
 
@@ -105,49 +110,57 @@ download_with_auth() {
     fi
 }
 
-download_zimage_turbo() {
+install_hf_tools() {
     echo ""
-    echo "📦 Z-Image Turbo Setup (Diffusers Pipeline)..."
-    echo "=============================================="
-    echo "⚠️  Total size: ~32.6GB"
-    echo ""
+    echo "🔧 Installing HuggingFace Tools..."
+    echo "=================================="
     
-    mkdir -p "${ZIMAGE_DIR}"
+    # Устанавливаем все HF инструменты
+    pip install --no-cache-dir \
+        huggingface-hub \
+        huggingface \
+        2>/dev/null || true
     
-    # Проверяем есть ли уже скачанные файлы
-    if [[ -f "${ZIMAGE_DIR}/transformer/diffusion_pytorch_model-00001-of-00003.safetensors" ]]; then
-        echo "✅ Z-Image Turbo already downloaded"
-        return 0
-    fi
+    # Настраиваем кэш в workspace (сохраняется между перезапусками)
+    export HF_HOME="${HF_CACHE_DIR}"
+    mkdir -p "${HF_CACHE_DIR}"
     
-    echo "→ Downloading Z-Image Turbo via huggingface-cli..."
-    
-    # Устанавливаем/обновляем huggingface-hub
-    pip install --no-cache-dir --upgrade huggingface-hub 2>/dev/null || true
-    
-    # Скачиваем весь pipeline
+    # Создаём конфиг с токеном
     if [[ -n "$HF_TOKEN" ]]; then
-        huggingface-cli download "${ZIMAGE_REPO}" \
-            --local-dir "${ZIMAGE_DIR}" \
-            --token "$HF_TOKEN" \
-            --local-dir-use-symlinks False \
-            --resume-download 2>&1 | tail -n 20
-    else
-        huggingface-cli download "${ZIMAGE_REPO}" \
-            --local-dir "${ZIMAGE_DIR}" \
-            --local-dir-use-symlinks False \
-            --resume-download 2>&1 | tail -n 20
+        mkdir -p "${HF_CACHE_DIR}/huggingface"
+        echo "token: ${HF_TOKEN}" > "${HF_CACHE_DIR}/huggingface/token"
+        chmod 600 "${HF_CACHE_DIR}/huggingface/token"
+        echo "✅ HuggingFace token configured"
     fi
     
-    if [[ $? -eq 0 && -f "${ZIMAGE_DIR}/transformer/diffusion_pytorch_model-00001-of-00003.safetensors" ]]; then
-        echo "✅ Z-Image Turbo downloaded successfully"
-        echo "📁 Location: ${ZIMAGE_DIR}"
-        du -sh "${ZIMAGE_DIR}"
-    else
-        echo " [!] Z-Image Turbo download failed"
-        echo "     Try manual download:"
-        echo "     huggingface-cli download ${ZIMAGE_REPO} --local-dir ${ZIMAGE_DIR}"
-    fi
+    # Проверяем установку
+    echo ""
+    echo "📦 Installed tools:"
+    huggingface-cli --version 2>/dev/null && echo "   • huggingface-cli ✓"
+    hf --version 2>/dev/null && echo "   • hf (new CLI) ✓"
+    
+    # Создаём удобные алиасы в .bashrc
+    cat >> ~/.bashrc << 'EOF'
+
+# HuggingFace shortcuts
+alias hf-download='huggingface-cli download'
+alias hf-upload='huggingface-cli upload'
+alias hf-repo='huggingface-cli repo create'
+alias hf-cache='huggingface-cli scan-cache'
+alias hf-auth='huggingface-cli auth login'
+
+# Quick model download
+alias hf-dl='huggingface-cli download --local-dir-use-symlinks False'
+
+# Show HF cache
+alias hf-ls='du -sh ~/.cache/huggingface/hub 2>/dev/null || echo "Cache empty"'
+EOF
+    
+    source ~/.bashrc
+    echo ""
+    echo "✅ HuggingFace tools installed and configured!"
+    echo "   Cache directory: ${HF_CACHE_DIR}"
+    echo "   Available commands: hf-download, hf-upload, hf-cache, hf-ls"
 }
 
 install_extra_pip() {
@@ -170,18 +183,20 @@ echo "🔧 Setting up environment..."
 clone_comfyui_if_needed
 install_extra_pip
 install_nodes
+install_hf_tools
 
 echo ""
 echo "📦 DOWNLOADING MODELS..."
 echo "========================"
 
 # 1. FLUX.2-klein-9B
+echo "📦 FLUX.2-klein-9B..."
 download_with_auth "${DIFFUSION_DIR}/flux-2-klein-9b.safetensors" "$FLUX_URL" || \
     echo "⚠️ FLUX.2 download failed"
 
-# 2. Qwen3-8B Text Encoder
+# 2. Qwen3-8B Text Encoder (для FLUX.2)
 echo ""
-echo "📦 Qwen3-8B Text Encoder..."
+echo "📦 Qwen3-8B Text Encoder (FLUX.2)..."
 download_with_auth "${TEXT_ENCODERS_DIR}/qwen_3_8b_fp8mixed.safetensors" "$QWEN_FP8_URL" || \
     download_with_auth "${TEXT_ENCODERS_DIR}/qwen_3_8b.safetensors" "$QWEN_FULL_URL" || \
     echo " [!] Qwen encoder download failed"
@@ -200,15 +215,40 @@ if [[ -n "$HF_TOKEN" ]]; then
     download_with_auth "${LLM_DIR}/Qwen3-8B-heretic-GGUF/Qwen3-8B-heretic.Q8_0.gguf" "$QWEN_GGUF_URL" || true
 fi
 
-# 5. Z-Image Turbo (Diffusers pipeline)
-download_zimage_turbo
+# 5. Z-IMAGE TURBO (BF16)
+echo ""
+echo "📦 Z-Image Turbo (BF16)..."
+echo "   Model: z_image_turbo_bf16.safetensors (~24GB)"
+download_with_auth "${DIFFUSION_DIR}/z_image_turbo_bf16.safetensors" "$ZIMAGE_MODEL_URL" || \
+    echo " [!] Z-Image model download failed"
+
+# 6. Z-Image Text Encoder
+echo ""
+echo "📦 Z-Image Text Encoder..."
+echo "   Encoder: qwen_3_4b_fp8_mixed.safetensors"
+download_with_auth "${TEXT_ENCODERS_DIR}/qwen_3_4b_fp8_mixed.safetensors" "$ZIMAGE_ENCODER_URL" || \
+    echo " [!] Z-Image encoder download failed"
+
+# 7. Z-Image VAE
+echo ""
+echo "📦 Z-Image VAE..."
+echo "   VAE: ae.safetensors"
+download_with_auth "${VAE_DIR}/ae.safetensors" "$ZIMAGE_VAE_URL" || \
+    echo " [!] Z-Image VAE download failed"
+
+# 8. Z-Image LoRA (optional)
+echo ""
+echo "📦 Z-Image LoRA (optional)..."
+download_with_auth "${LORAS_DIR}/z_image_turbo_distill_patch_lora_bf16.safetensors" "$ZIMAGE_LORA_URL" || \
+    echo " [!] Z-Image LoRA download failed"
 
 echo ""
 echo "✅ PROVISIONING COMPLETE!"
 echo "========================="
 echo ""
 echo "📁 Model paths:"
-echo "   • FLUX.2: ${DIFFUSION_DIR}/"
+echo ""
+echo "   • Diffusion Models: ${DIFFUSION_DIR}/"
 ls -lh "${DIFFUSION_DIR}"/*.safetensors 2>/dev/null || echo "      [NO MODELS]"
 echo ""
 echo "   • Text Encoders: ${TEXT_ENCODERS_DIR}/"
@@ -217,13 +257,18 @@ echo ""
 echo "   • VAE: ${VAE_DIR}/"
 ls -lh "${VAE_DIR}"/*.safetensors 2>/dev/null || echo "      [NO MODELS]"
 echo ""
-echo "   • Z-Image Turbo: ${ZIMAGE_DIR}/"
-if [[ -d "${ZIMAGE_DIR}/transformer" ]]; then
-    du -sh "${ZIMAGE_DIR}" 2>/dev/null || echo "      [CHECKING...]"
-    ls -lh "${ZIMAGE_DIR}/transformer/"*.safetensors 2>/dev/null | head -n 3
-else
-    echo "      [NOT DOWNLOADED]"
-fi
+echo "   • LoRAs: ${LORAS_DIR}/"
+ls -lh "${LORAS_DIR}"/*.safetensors 2>/dev/null || echo "      [NO LORAS]"
+echo ""
+echo "🔧 HuggingFace Tools:"
+echo "   • Cache: ${HF_CACHE_DIR}"
+du -sh "${HF_CACHE_DIR}" 2>/dev/null || echo "   • Size: checking..."
+echo ""
+echo "📚 Useful commands:"
+echo "   • hf-download <repo>          - Download model"
+echo "   • hf-ls                       - Show cache size"
+echo "   • hf-cache                    - Scan cache"
+echo "   • huggingface-cli whoami      - Check login"
 echo ""
 echo "🚀 ComfyUI will start on port 18188"
 echo ""
